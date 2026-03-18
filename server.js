@@ -152,20 +152,36 @@ async function uploadToImgBB(imagePath) {
 
 async function uploadToImgBBFromBuffer(imageBuffer, originalName) {
   const imgbbKey = process.env.IMGBB_API_KEY;
+  
+  if (!imgbbKey) {
+    console.error('❌ IMGBB_API_KEY is missing!');
+    throw new Error('IMGBB_API_KEY is not configured');
+  }
+  
+  console.log('🔑 Using ImgBB API key:', imgbbKey.substring(0, 10) + '...');
+  console.log('📁 Image buffer size:', imageBuffer.length, 'bytes');
+  
   const formData = new FormData();
   
-  // Convert buffer to readable stream
-  formData.append('image', imageBuffer, {
-    filename: originalName,
-    contentType: 'image/jpeg'
-  });
+  // Convert buffer to base64 for ImgBB
+  const base64Image = imageBuffer.toString('base64');
+  
+  // ImgBB expects base64 data with proper format
+  formData.append('image', base64Image);
+  formData.append('name', originalName);
 
-  const response = await axios.post('https://api.imgbb.com/1/upload', formData, {
-    params: { key: imgbbKey },
-    headers: formData.getHeaders()
-  });
-
-  return response.data.data.url;
+  try {
+    const response = await axios.post('https://api.imgbb.com/1/upload', formData, {
+      params: { key: imgbbKey },
+      headers: formData.getHeaders()
+    });
+    
+    console.log('✅ ImgBB upload successful:', response.data.data.url);
+    return response.data.data.url;
+  } catch (error) {
+    console.error('❌ ImgBB upload failed:', error.response?.data || error.message);
+    throw error;
+  }
 }
 
 async function googleLensSearch(imageUrl) {
