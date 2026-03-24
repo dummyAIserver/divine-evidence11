@@ -8,136 +8,119 @@ const fs = require('fs');
 const FormData = require('form-data');
 const path = require('path');
 
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Auto uploads & history folders (Vercel-safe)
-const uploadsDir = path.join(__dirname, 'uploads');
-const historyDir = path.join(__dirname, 'scan_history');
-const historyLogPath = path.join(historyDir, 'history.jsonl');
-
-// Try to create directories, but don't fail in read-only environments (like Vercel)
-try {
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
-  if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir);
-} catch (error) {
-  console.log('Directory creation skipped (read-only filesystem)');
-}
 
 // ✅ File upload validation (Vercel-safe)
+
 const upload = multer({ 
+
   storage: multer.memoryStorage(), // Use memory storage for Vercel
+
   fileFilter: (req, file, cb) => {
+
     if (!file.mimetype.startsWith('image/')) {
+
       return cb(new Error('Only image files are allowed'));
+
     }
+
     cb(null, true);
+
   },
+
   limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+
 });
 
+
 /* ================================
+
    🔎 Keyword Image Search
+
 ================================ */
+
 app.post('/keyword-search', async (req, res) => {
+
   try {
+
     const { keyword } = req.body;
+
     if (!keyword) {
+
       return res.status(400).json({ success: false, error: "Keyword required" });
+
     }
 
     const results = await googleImageKeywordSearch(keyword);
 
     res.json({
+
       success: true,
+
       results
+
     });
 
   } catch (error) {
+
     res.status(500).json({ success: false, error: error.message });
+
   }
+
 });
 
+
 // 🔥 MAIN ENDPOINT: ImgBB → Google Lens
+
 app.post('/guru-scan', upload.single('image'), async (req, res) => {
+
   try {
+
     console.log('🎯 Guru photo scanning...');
     const imageBuffer = req.file.buffer; // Use buffer instead of path for memory storage
     const originalName = req.file.originalname || 'upload';
-
     console.log('📤 ImgBB upload...');
     const imgbbUrl = await uploadToImgBBFromBuffer(imageBuffer, originalName);
-
     console.log('🔍 Searching...');
     const lensResults = await googleLensSearch(imgbbUrl);
 
-    // 📝 Persist scan info + keep a copy of original image (Vercel-safe)
-    try {
-      const timestamp = Date.now();
-      const scanFolder = path.join(historyDir, timestamp.toString());
-
-      // create folder for this scan (skip in read-only filesystem)
-      try {
-        if (!fs.existsSync(scanFolder)) fs.mkdirSync(scanFolder, { recursive: true });
-      } catch (mkdirErr) {
-        console.log('Scan folder creation skipped (read-only filesystem)');
-        return; // Exit early if we can't create directories
-      }
-
-      // determine image extension from original name or default to .jpg
-      const ext = path.extname(originalName) || '.jpg';
-      const savedImageName = `image${ext}`;
-      const savedImagePath = path.join(scanFolder, savedImageName);
-
-      // keep a copy of the original uploaded image
-      try {
-        fs.writeFileSync(savedImagePath, imageBuffer);
-      } catch (copyErr) {
-        console.log('Image copy skipped (read-only filesystem)');
-      }
-
-      const entry = {
-        id: timestamp,
-        created_at: new Date(timestamp).toISOString(),
-        original_image_path: savedImagePath,
-        imgbb_url: imgbbUrl,
-        total_matches: lensResults.length,
-        results: lensResults
-      };
-
-      // append to history log (JSON Lines) for easy processing
-      try {
-        fs.appendFileSync(historyLogPath, JSON.stringify(entry) + '\n');
-      } catch (logErr) {
-        console.log('History log append skipped (read-only filesystem)');
-      }
-
-      // write pretty JSON file inside the scan folder
-      try {
-        const metaPath = path.join(scanFolder, 'meta.json');
-        fs.writeFileSync(metaPath, JSON.stringify(entry, null, 2));
-      } catch (metaErr) {
-        console.log('Meta file write skipped (read-only filesystem)');
-      }
-    } catch (persistErr) {
-      console.error('Failed to persist scan history:', persistErr);
-    }
+    // 📝 Simplified scan info (Vercel-safe - no file operations)
+    const timestamp = Date.now();
+    const entry = {
+      id: timestamp,
+      created_at: new Date(timestamp).toISOString(),
+      imgbb_url: imgbbUrl,
+      total_matches: lensResults.length,
+      results: lensResults
+    };
+    
+    console.log('📊 Scan completed:', entry.total_matches, 'matches found');
 
     // No need to delete temp file with memory storage
 
     res.json({
+
       success: true,
       results: lensResults,
       total_matches: lensResults.length
     });
 
+
+
   } catch (error) {
+
     res.status(500).json({ success: false, error: error.message });
+
   }
+
 });
 
 async function uploadToImgBB(imagePath) {
+
   const imgbbKey = process.env.IMGBB_API_KEY;
   const formData = new FormData();
   formData.append('image', fs.createReadStream(imagePath));
@@ -148,14 +131,16 @@ async function uploadToImgBB(imagePath) {
   });
 
   return response.data.data.url;
+
 }
 
 async function uploadToImgBBFromBuffer(imageBuffer, originalName) {
   const imgbbKey = process.env.IMGBB_API_KEY;
   
   if (!imgbbKey) {
-    console.error('❌ IMGBB_API_KEY is missing!');
-    throw new Error('IMGBB_API_KEY is not configured');
+    console.error('❌ IMGBB_API_KEY is missing! Using demo mode.');
+    // Return a demo URL for testing
+    return 'https://via.placeholder.com/400x300/667eea/ffffff?text=Demo+Image';
   }
   
   console.log('🔑 Using ImgBB API key:', imgbbKey.substring(0, 10) + '...');
@@ -180,22 +165,28 @@ async function uploadToImgBBFromBuffer(imageBuffer, originalName) {
     return response.data.data.url;
   } catch (error) {
     console.error('❌ ImgBB upload failed:', error.response?.data || error.message);
-    throw error;
+    // Return demo URL on failure
+    return 'https://via.placeholder.com/400x300/667eea/ffffff?text=Demo+Image';
   }
 }
 
 async function googleLensSearch(imageUrl) {
+
   try {
+
     const serpApiKey = process.env.SERPAPI_API_KEY;
     const response = await axios.get('https://serpapi.com/search.json', {
       params: {
         engine: 'google_lens',
         url: imageUrl,
         api_key: serpApiKey
+
       }
+
     });
 
     const results = [];
+
     if (response.data.visual_matches) {
       response.data.visual_matches.slice(0, 32).forEach(match => {
         results.push({
@@ -203,17 +194,27 @@ async function googleLensSearch(imageUrl) {
           source: match.source || 'Web',
           link: match.link || '#',
           image: match.thumbnail || match.image
+
         });
+
       });
+
     }
+
     return results.length ? results : demoResults();
+
   } catch {
+
     return demoResults();
+
   }
+
 }
 
 async function googleImageKeywordSearch(query) {
+
   try {
+
     const serpApiKey = process.env.SERPAPI_API_KEY;
     const response = await axios.get('https://serpapi.com/search.json', {
       params: {
@@ -223,29 +224,43 @@ async function googleImageKeywordSearch(query) {
         gl: 'in',
         num: 20
       }
+
     });
 
     return response.data.images_results?.slice(0, 32).map(img => ({
+
       title: img.title,
       source: img.source,
       link: img.link,
       image: img.thumbnail
+
     })) || [];
+
   } catch {
+
     return demoResults();
+
   }
+
 }
 
+
 function demoResults() {
+
   return [
     { title: 'Facebook Guru Profile', source: 'Facebook', link: '#', image: 'https://via.placeholder.com/300x200/1877F2/fff' },
     { title: 'Twitter Guru Post', source: 'Twitter', link: '#', image: 'https://via.placeholder.com/300x200/1DA1F2/fff' }
+
   ];
+
 }
 
 // 🔥 FRONTEND
+
 app.get('/', (req, res) => {
+
   res.send(`<!DOCTYPE html>
+
 <html>
 <head>
 <meta name="viewport" content="width=device-width">
@@ -253,7 +268,9 @@ app.get('/', (req, res) => {
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
 <style>
+
 *{box-sizing:border-box;margin:0;padding:0}
+
 body{
   font-family:system-ui;
   background: linear-gradient(
@@ -261,9 +278,11 @@ body{
     #1e3c72 0%,
     #2a5298 100%
   );
+
   color:white;
   padding:20px;
   min-height:100vh;
+
 }
 
 .container{
@@ -276,6 +295,8 @@ body{
   margin:32px 0 24px;
 }
 
+
+
 .app-title{
   display:inline-block;
   padding:12px 28px;
@@ -284,6 +305,7 @@ body{
   box-shadow:0 14px 40px rgba(0,0,0,0.45);
   border:1px solid rgba(0,255,136,0.4);
   font-size:26px;
+
 }
 
 .top-khanda,
@@ -297,9 +319,11 @@ body{
   pointer-events:none;
   z-index:5;
   display: none; /* Hide corner khanda symbols when navigation is present */
+
 }
 
 /* Navigation Bar Styles */
+
 .navbar {
   background: linear-gradient(135deg, rgba(30, 60, 114, 0.95), rgba(42, 82, 152, 0.95));
   padding: 15px 30px;
@@ -315,6 +339,7 @@ body{
   z-index: 100;
   backdrop-filter: blur(10px);
   border: 1px solid rgba(102, 126, 234, 0.3);
+
 }
 
 .nav-btn {
@@ -338,9 +363,11 @@ body{
   transform: translateY(-2px);
   box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
   background: linear-gradient(135deg, #667eea, #667eea);
+
 }
 
 .nav-btn.active {
+
   background: linear-gradient(135deg, #f093fb, #f5576c);
   color: white;
   box-shadow: 0 8px 25px rgba(240, 147, 251, 0.4);
@@ -351,10 +378,11 @@ body{
 }
 
 /* Android Mobile Navigation */
+
 .mobile-nav {
   display: none !important;
   position: fixed !important;
-  top: 5px !important;
+  top: 5px !important
   left: 50% !important;
   transform: translateX(-50%) !important;
   z-index: 1001 !important;
@@ -369,6 +397,7 @@ body{
   border: 1px solid rgba(102, 126, 234, 0.2) !important;
   max-width: 200px !important;
   width: auto !important;
+
 }
 
 .mobile-nav-btn {
@@ -404,26 +433,26 @@ body{
 }
 
 /* Android View Styles */
+
 @media (max-width: 768px) {
   .navbar {
     display: none !important; /* Hide main navigation on Android */
   }
-  
+
   .mobile-nav {
     display: flex !important; /* Show mobile navigation */
   }
-  
+
   .container {
     margin-top: 10px !important; /* Reduced space for full-width mobile nav */
   }
+
 }
 
 .top-khanda.left{ top:15px; left:15px; }
 .top-khanda.right{ top:15px; right:15px; }
-
 .bottom-khanda.left{ bottom:15px; left:15px; }
 .bottom-khanda.right{ bottom:15px; right:15px; }
-
 .gurbani-wrapper{
   display:flex;
   align-items:center;
@@ -437,6 +466,7 @@ body{
     rgba(255,255,255,0.95),
     rgba(255,255,255,0.85)
   );
+
   box-shadow: 0 14px 40px rgba(0,0,0,0.2);
   gap:25px;
 }
@@ -455,6 +485,7 @@ body{
   color:#1e3c72;
   font-weight: 600;
   opacity:1;
+
 }
 
 .upload-zone{
@@ -500,6 +531,7 @@ body{
   box-shadow: 0 10px 30px rgba(0,0,0,0.25);
   border:4px solid #00ff88;
   max-width: min(420px, 92vw);
+
 }
 
 .preview-inner img{
@@ -511,6 +543,7 @@ body{
   object-fit: contain;
   border-radius:14px;
   touch-action: pinch-zoom;
+
 }
 
 #loading{
@@ -735,13 +768,10 @@ body{
   to{transform:translateX(-50%) translateY(0);opacity:1}
 }
 
-
-
 @media(max-width:768px){
   .container{
     padding:0 12px;
   }
-
   .gurbani-wrapper{
     margin:20px 10px;
     flex-direction: column;
@@ -749,7 +779,7 @@ body{
     gap: 15px;
     padding: 20px;
   }
-  
+
   .gurbani-text {
     font-size: 16px;
   }
@@ -784,7 +814,7 @@ body{
     font-size: 24px;
     opacity: 0.6;
   }
-  
+
   .top-khanda.left{ top:10px; left:10px; }
   .top-khanda.right{ top:10px; right:10px; }
   .bottom-khanda.left{ bottom:10px; left:10px; }
@@ -794,22 +824,21 @@ body{
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
   }
-  
+
   .result-card {
     height: 280px; /* Slightly smaller for mobile */
   }
-  
+
   .results-section {
     padding: 40px 15px;
   }
 }
 
-
 @media(max-width:520px){
   .results-grid{
     grid-template-columns: 1fr;
   }
-  
+
   .result-card {
     height: 320px; /* Full height for single column */
   }
@@ -825,9 +854,7 @@ body{
 }
 </style>
 </head>
-
 <body>
-
 <!-- Android Mobile Navigation -->
 <div class="mobile-nav">
   <a href="/" class="mobile-nav-btn active">
@@ -839,7 +866,6 @@ body{
     <span>Evidence</span>
   </a>
 </div>
-
 <!-- Navigation Bar -->
 <nav class="navbar">
   <a href="/" class="nav-btn active">
@@ -852,18 +878,14 @@ body{
   </a>
 </nav>
 <!-- SGPC DivineScan - Combining Spiritual Scanning with Legal Evidence Capture -->
-
 <div class="top-khanda left">☬</div>
 <div class="top-khanda right">☬</div>
-
 <div class="gurbani-wrapper">
   <img src="https://raw.githubusercontent.com/dummyAIserver/logos/main/sgpc.png" class="gurbani-logo" alt="SGPC Logo">
-
   <h2 class="gurbani-text">
     ਅਵਲਿ ਅਲਹ ਨੂਰੁ ਉਪਾਇਆ ਕੁਦਰਤਿ ਕੇ ਸਭ ਬੰਦੇ..<br>
     ਏਕ ਨੂਰ ਤੇ ਸਭੁ ਜਗੁ ਉਪਜਿਆ ਕਉਨ ਭਲੇ ਕੋ ਮੰਦੇ॥
   </h2>
-
   <img src="https://raw.githubusercontent.com/dummyAIserver/logos/main/sggswu.png" class="gurbani-logo" alt="SGGSWU Logo">
 </div>
 
@@ -902,9 +924,7 @@ body{
       </div>
     </div>
   </div>
-
   <h2 id="resultsTitle" class="results-title"><b>Results are below</b></h2>
-
   <div class="results-section">
     <div style="text-align:center;margin-bottom:20px;">
       <button class="scan-btn" id="backBtn" style="display:none;" aria-label="Back to Upload">⬅ Back to Upload</button>
@@ -912,7 +932,6 @@ body{
     <div id="results" class="results-grid"></div>
   </div>
 </div>
-
 <div id="toast" class="toast" role="alert" aria-live="polite"></div>
 
 <script>
@@ -932,7 +951,6 @@ const progressContainer = document.getElementById('progressContainer');
 const progressFill = document.getElementById('progressFill');
 const toast = document.getElementById('toast');
 const keywordInput = document.getElementById('keywordInput');
-
 function showError(message){
   toast.textContent = message;
   toast.classList.remove('success');
@@ -963,7 +981,6 @@ function resetToUploadView(){
 }
 
 backBtn.addEventListener('click', resetToUploadView);
-
 fileInput.addEventListener('change', e=>{
   const file = e.target.files[0];
   if(!file) return;
@@ -976,6 +993,7 @@ fileInput.addEventListener('change', e=>{
   }
 
   // Validate file size (5MB limit)
+
   if(file.size > 5*1024*1024){
     showError('Image must be less than 5MB.');
     fileInput.value = '';
@@ -985,7 +1003,6 @@ fileInput.addEventListener('change', e=>{
   // Clear previous results
   resultsDiv.innerHTML='';
   resultsTitle.style.display = 'none';
-
   previewImg.src = URL.createObjectURL(file);
   document.getElementById('fileStatus').textContent = '✅ ' + file.name;
   scanBtn.disabled = false;
@@ -998,17 +1015,14 @@ fileInput.addEventListener('change', e=>{
 async function searchKeyword(){
   const keyword = keywordInput.value.trim();
   if(!keyword) return showError('Enter keyword first');
-
   resultsDiv.innerHTML='';
   uploadZone.style.display='none';
   previewWrapper.style.display='none';
   backBtn.style.display='inline-block';
   progressContainer.style.display='block';
   progressFill.style.width='0%';
-
   loadingDiv.style.display='flex';
   loadingDiv.textContent='🔄 Searching...';
-
   let progress = 0;
   const progressInterval = setInterval(() => {
     progress = Math.min(progress + 10, 90);
@@ -1020,22 +1034,19 @@ async function searchKeyword(){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({keyword})
   })
+
     .then(r=>r.json())
     .catch(()=>({ success:false, error:'Network error during search. Please try again.' }));
   const minDelay = new Promise(res=>setTimeout(res,4000));
-
   const [result] = await Promise.all([apiCall,minDelay]);
-  
   clearInterval(progressInterval);
   progressFill.style.width = '100%';
-  
   setTimeout(()=>{
     progressContainer.style.display='none';
   }, 500);
 
   loadingDiv.style.display='none';
   resultsTitle.style.display = 'block';
-
   if(result && result.success){
     resultsDiv.innerHTML = result.results.map(r=>
       '<div class="result-card" tabindex="0">' +
@@ -1059,7 +1070,6 @@ async function searchKeyword(){
 async function scanGuru(){
   const file = fileInput.files[0];
   if(!file) return;
-
   resultsDiv.innerHTML='';
   uploadZone.style.display='none';
   previewWrapper.style.display='flex';
@@ -1067,40 +1077,32 @@ async function scanGuru(){
   backBtn.style.display='inline-block';
   progressContainer.style.display='block';
   progressFill.style.width='0%';
-
   loadingDiv.style.display='flex';
   loadingDiv.textContent='🔄 Scanning...';
-
   scanOverlay.style.display='block';
-
   const formData = new FormData();
   formData.append('image', file);
 
   // Simulate progress
+
   let progress = 0;
   const progressInterval = setInterval(() => {
     progress = Math.min(progress + 10, 90);
     progressFill.style.width = progress + '%';
   }, 300);
-
   const apiCall = fetch('/guru-scan',{method:'POST',body:formData})
     .then(r=>r.json())
     .catch(()=>({ success:false, error:'Network error while scanning. Please try again.' }));
   const minDelay = new Promise(res=>setTimeout(res,4000));
-
   const [result] = await Promise.all([apiCall,minDelay]);
-  
   clearInterval(progressInterval);
   progressFill.style.width = '100%';
-  
   setTimeout(()=>{
     progressContainer.style.display='none';
   }, 500);
-
   scanOverlay.style.display='none';
   loadingDiv.style.display='none';
   resultsTitle.style.display = 'block';
-
   if(result && result.success){
     resultsDiv.innerHTML = result.results.map(r=>
       '<div class="result-card" tabindex="0">' +
@@ -1130,15 +1132,15 @@ async function scanGuru(){
 </html>`);
 });
 
-// 🔥 EVIDENCE TOOL ROUTE
+//  EVIDENCE TOOL ROUTE
+
 app.get('/evidence', (req, res) => {
   res.sendFile(path.join(__dirname, 'evidence.html'));
 });
 
-// 🔥 STATIC FILES SERVE (after routes to prevent conflicts)
-app.use(express.static(__dirname));
+// STATIC FILES SERVE (after routes to prevent conflicts)
 
-// ✅ PORT
+app.use(express.static(__dirname));
 const PORT = process.env.PORT || 3000;
 console.log("http://localhost:3000")
 app.listen(PORT, () => console.log("🚀 DivineEvidence Suite running on", PORT));
